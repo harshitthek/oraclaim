@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "oci-arm-smart-claimer"
+name = "oraclaim"
 version = "1.0.0"
-description = "Production-grade, asynchronous dual-worker Oracle Cloud Always Free ARM auto-claimer with AIMD rate learning and top-of-hour surge."
+description = "Intelligent, multi-worker auto-provisioning engine for Oracle Cloud Always Free ARM and AMD compute instances."
 authors = [{ name = "Harshit", email = "harshit@worldtree.local" }]
 license = { text = "MIT" }
 readme = "README.md"
@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-oci-claim = "src.cli:main"
+oraclaim = "src.cli:main"
 
 [tool.black]
 line-length = 100
