@@ -18,7 +18,6 @@ def is_surge_window() -> bool:
 
 def run_claimer_worker(
     worker_id: str,
-    initial_phase_offset: float,
     config: ClaimerConfig,
     coordinator: ClaimCoordinator,
     oci_wrapper: OCIClientWrapper,
@@ -26,18 +25,15 @@ def run_claimer_worker(
     image_id: str,
     subnet_id: str,
 ) -> None:
-    """Universal asynchronous worker loop with phase locking, threat broadcasts, and surge bursts."""
-    time.sleep(initial_phase_offset)
-
+    """Synchronized pipeline worker thread."""
     while not coordinator.is_stopped():
-        cooldown = coordinator.check_cooldown()
-        if cooldown > 0:
-            time.sleep(cooldown + random.uniform(0.5, 2.0))
-            continue
-
-        attempt_num, target_fd = coordinator.get_next_assignment(worker_id)
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         surge = is_surge_window()
+        attempt_num, target_fd = coordinator.acquire_next_turn(worker_id, is_surge=surge)
+
+        if coordinator.is_stopped():
+            break
+
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         mode_tag = "🔥 SURGE" if surge else "SYNC"
         fd_display = target_fd if target_fd else "ANY_FD"
 
@@ -53,13 +49,11 @@ def run_claimer_worker(
             "metadata": {"ssh_authorized_keys": config.public_ssh_key},
         }
 
-        # Apply shape_config only for flex shapes (e.g. VM.Standard.A1.Flex)
         if config.is_flex_shape:
             launch_kwargs["shape_config"] = oci.core.models.LaunchInstanceShapeConfigDetails(
                 ocpus=config.ocpus, memory_in_gbs=config.memory_in_gbs
             )
 
-        # Apply custom boot volume size if requested
         if config.boot_volume_size_in_gbs:
             launch_kwargs["source_details"] = oci.core.models.InstanceSourceViaImageDetails(
                 source_type="image",
@@ -102,31 +96,21 @@ def run_claimer_worker(
                 )
 
             elif e.status == 429 or "toomanyrequests" in e.code.lower():
-                retry_header = 36.0
+                retry_header = 38.0
                 if hasattr(e, "headers") and e.headers and "retry-after" in e.headers:
                     try:
                         retry_header = float(e.headers["retry-after"])
                     except Exception:
                         pass
                 coordinator.broadcast_rate_limit(worker_id, retry_header)
-                time.sleep(retry_header)
-                continue
 
             elif e.status in [502, 503, 504]:
                 coordinator.broadcast_rate_limit(worker_id, 20.0)
-                time.sleep(20.0)
-                continue
 
             else:
                 print(f"   -> [{worker_id}] Notice [{e.status}]: {e.message}", flush=True)
 
         except Exception as ex:
             print(f"   -> [{worker_id}] Glitch: {ex}", flush=True)
-            time.sleep(12.0)
 
         coordinator.write_status_snapshot()
-
-        base_cadence = config.surge_cadence if surge else config.base_cadence
-        jitter = random.uniform(-1.5, 1.5)
-        sleep_dur = max(config.min_safe_interval, base_cadence + jitter)
-        time.sleep(sleep_dur)

@@ -8,19 +8,29 @@ from typing import Dict, List, Optional, Tuple
 
 
 class ClaimCoordinator:
-    """Thread-safe central coordinator managing phase locking, threat broadcasts,
+    """Strict Token-Ring Sequencer Coordinator.
 
-    fault domain distribution, and atomic termination.
+    Guarantees that no two workers can ever launch requests simultaneously,
+    strictly spacing all requests by the configured cadence even after rate-limit cooldowns.
     """
 
-    def __init__(self, fault_domain_candidates: List[Optional[str]], success_file: str, status_file: str):
+    def __init__(
+        self,
+        fault_domain_candidates: List[Optional[str]],
+        success_file: str,
+        status_file: str,
+        cadence_seconds: float = 20.0,
+        min_interval_seconds: float = 14.0,
+    ):
         self.fd_candidates = fault_domain_candidates
         self.success_file = success_file
         self.status_file = status_file
+        self.cadence = cadence_seconds
+        self.min_interval = min_interval_seconds
 
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
-        self.global_cooldown_until: float = 0.0
+        self.next_allowed_request_time: float = time.time()
         self.fd_index: int = 0
         self.total_attempts: int = 0
         self.capacity_errors: int = 0
@@ -52,31 +62,38 @@ class ClaimCoordinator:
         except Exception:
             pass
 
-    def broadcast_rate_limit(self, source_worker: str, base_cooldown: float = 36.0) -> None:
+    def broadcast_rate_limit(self, source_worker: str, cooldown_seconds: float = 38.0) -> None:
         with self.lock:
             self.rate_limit_hits += 1
-            cooldown = base_cooldown + random.uniform(1.0, 6.0)
-            target_time = time.time() + cooldown
-            if target_time > self.global_cooldown_until:
-                self.global_cooldown_until = target_time
-                print(
-                    f"   -> [BROADCAST from {source_worker}] Rate limit hit. Inter-worker cooldown: {cooldown:.1f}s",
-                    flush=True,
-                )
+            now = time.time()
+            self.next_allowed_request_time = max(self.next_allowed_request_time, now + cooldown_seconds)
+            print(
+                f"   -> [BROADCAST from {source_worker}] Rate limit hit. Pipeline spaced by {cooldown_seconds:.1f}s",
+                flush=True,
+            )
 
-    def get_next_assignment(self, worker_name: str) -> Tuple[int, Optional[str]]:
+    def acquire_next_turn(self, worker_name: str, is_surge: bool = False) -> Tuple[int, Optional[str]]:
+        """Atomically allocates a dedicated, collision-free time slot in the launch pipeline."""
         with self.lock:
+            now = time.time()
+            effective_cadence = self.cadence * 0.75 if is_surge else self.cadence
+            jitter = random.uniform(-1.0, 1.0) if self.min_interval > 1.0 else 0.0
+            slot_interval = max(self.min_interval, effective_cadence + jitter)
+
+            scheduled_time = max(now, self.next_allowed_request_time)
+            self.next_allowed_request_time = scheduled_time + slot_interval
+
             self.total_attempts += 1
             fd = self.fd_candidates[self.fd_index % len(self.fd_candidates)]
             self.fd_index += 1
             attempt_num = self.total_attempts
             self.worker_heartbeats[worker_name] = datetime.now().strftime("%H:%M:%S")
-            return attempt_num, fd
 
-    def check_cooldown(self) -> float:
-        with self.lock:
-            remaining = self.global_cooldown_until - time.time()
-            return max(0.0, remaining)
+        sleep_needed = scheduled_time - now
+        if sleep_needed > 0:
+            time.sleep(sleep_needed)
+
+        return attempt_num, fd
 
     def write_status_snapshot(self) -> None:
         try:

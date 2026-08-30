@@ -13,7 +13,7 @@ from src.worker import run_claimer_worker
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="oci-claim",
+        prog="oraclaim",
         description="Universal Asynchronous Multi-Worker Oracle Cloud Always Free Instance Auto-Claimer.",
     )
     parser.add_argument(
@@ -50,7 +50,7 @@ def parse_args() -> argparse.Namespace:
         "--workers", type=int, default=2, help="Number of concurrent alternating worker threads (default: 2)"
     )
     parser.add_argument(
-        "--cadence", type=float, default=28.0, help="Base polling cadence in seconds per worker (default: 28.0)"
+        "--cadence", type=float, default=20.0, help="Base polling cadence in seconds across the pipeline (default: 20.0)"
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Validate credentials and resource discovery without launching"
@@ -73,19 +73,19 @@ def main() -> None:
     cfg.display_name = args.name
     cfg.num_workers = args.workers
     cfg.base_cadence = args.cadence
-    cfg.phase_offset = args.cadence / max(1, args.workers)
 
     shape_info = f"{cfg.shape} ({cfg.ocpus:.0f} OCPU / {cfg.memory_in_gbs:.0f} GB RAM)" if cfg.is_flex_shape else cfg.shape
 
     print("\n" + "=" * 75)
-    print("  🚀 UNIVERSAL OCI SMART AUTO-CLAIMER")
+    print("  ⚡ ORACLAIM AUTO-PROVISIONING ENGINE")
     print("=" * 75)
     print(f"  • Target Shape:     {shape_info}")
     print(f"  • Target OS:        {cfg.os_name} {cfg.os_version or '(Latest)'}")
     if cfg.boot_volume_size_in_gbs:
         print(f"  • Boot Volume:      {cfg.boot_volume_size_in_gbs} GB")
     print(f"  • Display Name:     {cfg.display_name}")
-    print(f"  • Active Workers:   {cfg.num_workers} Parallel Threads (Phase Offset: {cfg.phase_offset:.1f}s)")
+    print(f"  • Pipeline Cadence: Every ~{cfg.base_cadence:.0f}s (Token-Ring Sequencer)")
+    print(f"  • Workers:          {cfg.num_workers} Concurrent Synchronized Threads")
     print(f"  • Config File:      {cfg.config_file}")
     print("=" * 75 + "\n", flush=True)
 
@@ -97,7 +97,6 @@ def main() -> None:
 
     ad_name = oci_wrapper.get_availability_domain()
     raw_fds = oci_wrapper.get_fault_domains(ad_name)
-    # Include Wildcard (None) for full datacenter placement
     fd_candidates = [None] + raw_fds
 
     image_id = oci_wrapper.discover_image(cfg.os_name, cfg.shape, cfg.os_version)
@@ -115,7 +114,7 @@ def main() -> None:
     success_file = os.path.join(os.getcwd(), "instance_success.txt")
     status_file = os.path.join(os.getcwd(), "claimer_status.json")
 
-    coordinator = ClaimCoordinator(fd_candidates, success_file, status_file)
+    coordinator = ClaimCoordinator(fd_candidates, success_file, status_file, cadence_seconds=cfg.base_cadence)
 
     def sig_handler(sig, frame):
         print("\n[*] Stopping claimer workers gracefully...", flush=True)
@@ -128,10 +127,9 @@ def main() -> None:
     worker_threads = []
     for i in range(cfg.num_workers):
         worker_name = f"Worker-{chr(65 + i)}"
-        offset = i * cfg.phase_offset
         t = threading.Thread(
             target=run_claimer_worker,
-            args=(worker_name, offset, cfg, coordinator, oci_wrapper, ad_name, image_id, subnet_id),
+            args=(worker_name, cfg, coordinator, oci_wrapper, ad_name, image_id, subnet_id),
             daemon=True,
         )
         worker_threads.append(t)
