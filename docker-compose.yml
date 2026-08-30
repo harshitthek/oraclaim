@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  oci-claimer:
+    build: .
+    container_name: oci-arm-claimer
+    restart: unless-stopped
+    volumes:
+      - ./config.ini:/app/config.ini:ro
+      - ./ssh-key.key:/app/ssh-key.key:ro
+      - ./ssh-key.key.pub:/app/ssh-key.key.pub:ro
+      - ./logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OCI_CONFIG_FILE=/app/config.ini
+      - TARGET_OCPUS=1.0
+      - TARGET_MEMORY_GBS=6.0
+      - TARGET_DISPLAY_NAME=WorldTree-ARM-1Core-6GB

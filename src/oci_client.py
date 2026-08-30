@@ -1,0 +1,67 @@
+import os
+from typing import List, Optional, Tuple
+import oci
+
+
+class OCIClientWrapper:
+    """Manages authenticated OCI API clients with persistent connection pooling."""
+
+    def __init__(self, config_file: str, profile: str = "DEFAULT", key_file: Optional[str] = None):
+        if not os.path.exists(config_file):
+            raise FileNotFoundError(f"OCI config file not found at: {config_file}")
+
+        self.config = oci.config.from_file(config_file, profile)
+        if key_file:
+            self.config["key_file"] = key_file
+
+        self.tenancy_id = self.config["tenancy"]
+
+        # Instantiate persistent API clients
+        self.compute_client = oci.core.ComputeClient(self.config)
+        self.identity_client = oci.identity.IdentityClient(self.config)
+        self.network_client = oci.core.VirtualNetworkClient(self.config)
+
+    def get_availability_domain(self) -> str:
+        ads = self.identity_client.list_availability_domains(self.tenancy_id).data
+        if not ads:
+            raise RuntimeError(f"No availability domains returned for tenancy {self.tenancy_id}")
+        return ads[0].name
+
+    def get_fault_domains(self, ad_name: str) -> List[str]:
+        try:
+            fds = self.identity_client.list_fault_domains(
+                self.tenancy_id, availability_domain=ad_name
+            ).data
+            return [fd.name for fd in fds]
+        except Exception:
+            return ["FAULT-DOMAIN-1", "FAULT-DOMAIN-2", "FAULT-DOMAIN-3"]
+
+    def discover_arm_image(self) -> str:
+        """Dynamically locates the latest Canonical Ubuntu ARM image for the region."""
+        try:
+            images = self.compute_client.list_images(
+                self.tenancy_id,
+                operating_system="Canonical Ubuntu",
+                shape="VM.Standard.A1.Flex",
+                sort_by="TIMECREATED",
+                sort_order="DESC",
+            ).data
+            if images:
+                return images[0].id
+        except Exception:
+            pass
+
+        # Fallback Mumbai Ubuntu 24.04 ARM image
+        return "ocid1.image.oc1.ap-mumbai-1.aaaaaaaavpkbfemaxi7gfzobc4qsc3p2m5szuswd7skrxvzo5teii6bfkd2a"
+
+    def discover_public_subnet(self) -> str:
+        vcns = self.network_client.list_vcns(self.tenancy_id).data
+        for vcn in vcns:
+            subnets = self.network_client.list_subnets(self.tenancy_id, vcn_id=vcn.id).data
+            for s in subnets:
+                if "public" in s.display_name.lower():
+                    return s.id
+            if subnets:
+                return subnets[0].id
+
+        raise RuntimeError("No suitable public subnet found in tenancy.")
