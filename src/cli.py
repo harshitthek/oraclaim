@@ -14,7 +14,7 @@ from src.worker import run_claimer_worker
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="oci-claim",
-        description="High-Performance Asynchronous Dual-Worker Oracle Cloud Always Free ARM Claimer.",
+        description="Universal Asynchronous Multi-Worker Oracle Cloud Always Free Instance Auto-Claimer.",
     )
     parser.add_argument(
         "-c", "--config", dest="config_file", help="Path to OCI config file (default: ./config.ini or ./oci_config)"
@@ -26,16 +26,34 @@ def parse_args() -> argparse.Namespace:
         "-p", "--pub-key", dest="pub_key_file", help="Path to public SSH key (.pub)"
     )
     parser.add_argument(
-        "--ocpus", type=float, default=1.0, help="Number of OCPUs to request (default: 1.0)"
+        "--shape", type=str, default="VM.Standard.A1.Flex", help="Target instance shape (e.g. VM.Standard.A1.Flex, VM.Standard.E2.1.Micro)"
     )
     parser.add_argument(
-        "--memory", type=float, default=6.0, help="Amount of RAM in GB to request (default: 6.0)"
+        "--ocpus", type=float, default=1.0, help="Number of OCPUs (for Flex shapes, 1.0 to 4.0)"
     )
     parser.add_argument(
-        "--name", type=str, default="WorldTree-ARM-1Core-6GB", help="Display name for the instance"
+        "--memory", type=float, default=6.0, help="Amount of RAM in GB (for Flex shapes, 1.0 to 24.0)"
     )
     parser.add_argument(
-        "--dry-run", action="store_true", help="Validate credentials and exit without launching"
+        "--os", dest="os_name", type=str, default="Canonical Ubuntu", help="Operating System name (e.g. 'Canonical Ubuntu', 'Oracle Linux', 'Debian')"
+    )
+    parser.add_argument(
+        "--os-version", type=str, default=None, help="Operating System version (e.g. '24.04', '9', '12')"
+    )
+    parser.add_argument(
+        "--boot-volume-gbs", type=int, default=None, help="Custom boot volume size in GB (e.g. 50, 100, 200)"
+    )
+    parser.add_argument(
+        "--name", type=str, default="OCI-Auto-Claimed-Instance", help="Custom display name for the instance"
+    )
+    parser.add_argument(
+        "--workers", type=int, default=2, help="Number of concurrent alternating worker threads (default: 2)"
+    )
+    parser.add_argument(
+        "--cadence", type=float, default=28.0, help="Base polling cadence in seconds per worker (default: 28.0)"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Validate credentials and resource discovery without launching"
     )
     return parser.parse_args()
 
@@ -46,17 +64,29 @@ def main() -> None:
     cfg = ClaimerConfig.load_from_env_or_file(
         config_file=args.config_file, key_path=args.key_file, pub_key_path=args.pub_key_file
     )
+    cfg.shape = args.shape
     cfg.ocpus = args.ocpus
     cfg.memory_in_gbs = args.memory
+    cfg.os_name = args.os_name
+    cfg.os_version = args.os_version
+    cfg.boot_volume_size_in_gbs = args.boot_volume_gbs
     cfg.display_name = args.name
+    cfg.num_workers = args.workers
+    cfg.base_cadence = args.cadence
+    cfg.phase_offset = args.cadence / max(1, args.workers)
+
+    shape_info = f"{cfg.shape} ({cfg.ocpus:.0f} OCPU / {cfg.memory_in_gbs:.0f} GB RAM)" if cfg.is_flex_shape else cfg.shape
 
     print("\n" + "=" * 75)
-    print("  🚀 OCI ARM SMART AUTO-CLAIMER")
+    print("  🚀 UNIVERSAL OCI SMART AUTO-CLAIMER")
     print("=" * 75)
-    print(f"  • Target Shape:     VM.Standard.A1.Flex ({cfg.ocpus:.0f} Core / {cfg.memory_in_gbs:.0f} GB RAM)")
+    print(f"  • Target Shape:     {shape_info}")
+    print(f"  • Target OS:        {cfg.os_name} {cfg.os_version or '(Latest)'}")
+    if cfg.boot_volume_size_in_gbs:
+        print(f"  • Boot Volume:      {cfg.boot_volume_size_in_gbs} GB")
     print(f"  • Display Name:     {cfg.display_name}")
+    print(f"  • Active Workers:   {cfg.num_workers} Parallel Threads (Phase Offset: {cfg.phase_offset:.1f}s)")
     print(f"  • Config File:      {cfg.config_file}")
-    print(f"  • Key File:         {cfg.private_key_path}")
     print("=" * 75 + "\n", flush=True)
 
     if not cfg.public_ssh_key:
@@ -70,17 +100,16 @@ def main() -> None:
     # Include Wildcard (None) for full datacenter placement
     fd_candidates = [None] + raw_fds
 
-    image_id = oci_wrapper.discover_arm_image()
+    image_id = oci_wrapper.discover_image(cfg.os_name, cfg.shape, cfg.os_version)
     subnet_id = oci_wrapper.discover_public_subnet()
 
     print(f"[+] Availability Domain: {ad_name}")
     print(f"[+] Target Subnet:        {subnet_id}")
-    print(f"[+] ARM Image:            {image_id}")
-    print(f"[+] Fault Domains:        Wildcard (ANY_FD), {', '.join(raw_fds)}")
-    print("[+] Architecture:         Phase-Locked Dual-Worker (14s cadence)")
+    print(f"[+] Discovered Image:     {image_id}")
+    print(f"[+] Placement Targets:    Wildcard (ANY_FD), {', '.join(raw_fds)}")
 
     if args.dry_run:
-        print("\n[✔] Dry run successful. All credentials and discovery endpoints valid!")
+        print("\n[✔] Dry run successful. All credentials, image catalogs, and discovery endpoints valid!")
         return
 
     success_file = os.path.join(os.getcwd(), "instance_success.txt")
@@ -96,28 +125,17 @@ def main() -> None:
     signal.signal(signal.SIGINT, sig_handler)
     signal.signal(signal.SIGTERM, sig_handler)
 
-    t1 = threading.Thread(
-        target=run_claimer_worker,
-        args=("Worker-Alpha", 0.0, cfg, coordinator, oci_wrapper, ad_name, image_id, subnet_id),
-        daemon=True,
-    )
-    t2 = threading.Thread(
-        target=run_claimer_worker,
-        args=(
-            "Worker-Beta",
-            cfg.phase_offset,
-            cfg,
-            coordinator,
-            oci_wrapper,
-            ad_name,
-            image_id,
-            subnet_id,
-        ),
-        daemon=True,
-    )
-
-    t1.start()
-    t2.start()
+    worker_threads = []
+    for i in range(cfg.num_workers):
+        worker_name = f"Worker-{chr(65 + i)}"
+        offset = i * cfg.phase_offset
+        t = threading.Thread(
+            target=run_claimer_worker,
+            args=(worker_name, offset, cfg, coordinator, oci_wrapper, ad_name, image_id, subnet_id),
+            daemon=True,
+        )
+        worker_threads.append(t)
+        t.start()
 
     while not coordinator.is_stopped():
         time.sleep(1.0)

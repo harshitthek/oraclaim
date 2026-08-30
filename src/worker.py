@@ -1,7 +1,6 @@
 import random
 import time
 from datetime import datetime
-from typing import Optional
 import oci
 
 from src.config import ClaimerConfig
@@ -27,7 +26,7 @@ def run_claimer_worker(
     image_id: str,
     subnet_id: str,
 ) -> None:
-    """Asynchronous worker loop with phase locking, threat broadcasts, and surge bursts."""
+    """Universal asynchronous worker loop with phase locking, threat broadcasts, and surge bursts."""
     time.sleep(initial_phase_offset)
 
     while not coordinator.is_stopped():
@@ -45,10 +44,7 @@ def run_claimer_worker(
         launch_kwargs = {
             "compartment_id": oci_wrapper.tenancy_id,
             "availability_domain": ad_name,
-            "shape": "VM.Standard.A1.Flex",
-            "shape_config": oci.core.models.LaunchInstanceShapeConfigDetails(
-                ocpus=config.ocpus, memory_in_gbs=config.memory_in_gbs
-            ),
+            "shape": config.shape,
             "display_name": config.display_name,
             "image_id": image_id,
             "create_vnic_details": oci.core.models.CreateVnicDetails(
@@ -57,15 +53,35 @@ def run_claimer_worker(
             "metadata": {"ssh_authorized_keys": config.public_ssh_key},
         }
 
+        # Apply shape_config only for flex shapes (e.g. VM.Standard.A1.Flex)
+        if config.is_flex_shape:
+            launch_kwargs["shape_config"] = oci.core.models.LaunchInstanceShapeConfigDetails(
+                ocpus=config.ocpus, memory_in_gbs=config.memory_in_gbs
+            )
+
+        # Apply custom boot volume size if requested
+        if config.boot_volume_size_in_gbs:
+            launch_kwargs["source_details"] = oci.core.models.InstanceSourceViaImageDetails(
+                source_type="image",
+                image_id=image_id,
+                boot_volume_size_in_gbs=config.boot_volume_size_in_gbs,
+            )
+
         if target_fd:
             launch_kwargs["fault_domain"] = target_fd
 
         launch_details = oci.core.models.LaunchInstanceDetails(**launch_kwargs)
 
+        spec_str = (
+            f"{config.shape} ({config.ocpus:.0f} OCPU / {config.memory_in_gbs:.0f} GB RAM)"
+            if config.is_flex_shape
+            else f"{config.shape}"
+        )
+
         start_req = time.time()
         try:
             print(
-                f"[{now_str}] [#{attempt_num}] [{worker_id}] [{fd_display}] [{mode_tag}] Launching {config.ocpus:.0f} Core / {config.memory_in_gbs:.0f} GB ARM...",
+                f"[{now_str}] [#{attempt_num}] [{worker_id}] [{fd_display}] [{mode_tag}] Launching {spec_str}...",
                 flush=True,
             )
             response = oci_wrapper.compute_client.launch_instance(launch_details)

@@ -1,8 +1,8 @@
 <div align="center">
 
-# 🚀 OCI ARM Smart Auto-Claimer
+# 🚀 Universal OCI Smart Auto-Claimer
 
-**A high-performance, asynchronous dual-worker engine designed to claim Always-Free Ampere A1 ARM compute instances on Oracle Cloud Infrastructure (OCI).**
+**A high-performance, asynchronous multi-worker engine designed to claim Always-Free Ampere A1 ARM and AMD compute instances on Oracle Cloud Infrastructure (OCI).**
 
 [![CI](https://github.com/harshitthek/oci-arm-smart-claimer/actions/workflows/ci.yml/badge.svg)](https://github.com/harshitthek/oci-arm-smart-claimer/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
@@ -17,7 +17,8 @@
 
 Unlike basic single-threaded pollers that get throttled or crash, this engine uses a distributed multi-worker architecture with real-time inter-worker synchronization:
 
-* ⏱️ **Phase-Locked Dual-Worker Interleaving:** Two concurrent asynchronous workers poll with dynamic phase offsets to achieve a steady **~14-second cadence** without collision or redundant API calls.
+* 🎯 **Universal Shape & OS Support:** Fully configurable for **any instance shape** (`VM.Standard.A1.Flex` ARM up to 4 OCPUs/24 GB RAM, `VM.Standard.E2.1.Micro` AMD, etc.) and **any OS** (Canonical Ubuntu, Oracle Linux, Debian, etc.).
+* ⏱️ **Phase-Locked Multi-Worker Interleaving:** Configurable concurrent asynchronous workers poll with dynamic phase offsets to achieve a steady, balanced cadence without collision or redundant API calls.
 * 🧠 **AIMD Rate-Limit Protection (Additive Increase, Multiplicative Decrease):** Dynamically detects HTTP 429 (`TooManyRequests`) and broadcasts instant cooldowns across all workers, keeping your account 100% compliant and ban-free.
 * 🌐 **Wildcard Placement (`ANY_FD`):** Alternates between specific server racks (`FAULT-DOMAIN-1`, `2`, `3`) and **Wildcard Placement** (commanding Oracle to search all physical racks across the entire datacenter at once).
 * 🔥 **Top-of-Hour Surge Mode:** Automatically accelerates polling frequency during **:00, :15, :30, and :45** when expired trial accounts and idle tenancies are terminated by Oracle's batch cleanups.
@@ -91,17 +92,25 @@ Place your public SSH key (`id_rsa.pub` or `ssh-key.pub`) in the project root.
 
 ---
 
-## 💻 Usage
+## 💻 CLI Options & Flexibility
 
-### Run Directly via CLI
 ```bash
-# Basic run
+# Standard 1 Core / 6 GB Ubuntu ARM Node
 python -m src.cli
 
-# Custom specs (e.g. 2 Cores / 12 GB RAM)
-python -m src.cli --ocpus 2.0 --memory 12.0 --name "My-ARM-Server"
+# Max Always-Free ARM Specs (4 OCPUs / 24 GB RAM / 100 GB Boot Volume)
+python -m src.cli --ocpus 4.0 --memory 24.0 --boot-volume-gbs 100 --name "High-Memory-Node"
 
-# Validate credentials without launching
+# Oracle Linux 9 ARM Instance
+python -m src.cli --os "Oracle Linux" --os-version "9" --ocpus 2.0 --memory 12.0
+
+# Free-Tier AMD Micro Instance (x86_64)
+python -m src.cli --shape "VM.Standard.E2.1.Micro" --os "Canonical Ubuntu" --name "AMD-Micro-Node"
+
+# High-Concurrency Polling (3 Workers, 20s base cadence)
+python -m src.cli --workers 3 --cadence 20.0
+
+# Validate credentials and resource discovery without launching
 python -m src.cli --dry-run
 ```
 
