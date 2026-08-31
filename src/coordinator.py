@@ -92,26 +92,36 @@ class ClaimCoordinator:
 
     def acquire_next_turn(self, worker_name: str, is_surge: bool = False) -> Tuple[int, Optional[str]]:
         """Atomically allocates a dedicated, collision-free time slot in the launch pipeline."""
-        with self.lock:
-            now = time.time()
-            effective_cadence = self.cadence * 0.75 if is_surge else self.cadence
-            jitter = random.uniform(-1.0, 1.0) if self.min_interval > 1.0 else 0.0
-            slot_interval = max(self.min_interval, effective_cadence + jitter)
+        while True:
+            with self.lock:
+                now = time.time()
+                scheduled_time = max(now, self.next_allowed_request_time)
+                sleep_needed = scheduled_time - now
 
-            scheduled_time = max(now, self.next_allowed_request_time)
-            self.next_allowed_request_time = scheduled_time + slot_interval
+            if sleep_needed > 0.1:
+                time.sleep(sleep_needed)
+                continue  # Wake up and re-check in case another thread extended the rate limit!
 
-            self.total_attempts += 1
-            fd = self.fd_candidates[self.fd_index % len(self.fd_candidates)]
-            self.fd_index += 1
-            attempt_num = self.total_attempts
-            self.worker_heartbeats[worker_name] = datetime.now().strftime("%H:%M:%S")
+            with self.lock:
+                # Final check to ensure we still have the floor
+                now = time.time()
+                if now < self.next_allowed_request_time:
+                    continue
 
-        sleep_needed = scheduled_time - now
-        if sleep_needed > 0:
-            time.sleep(sleep_needed)
+                # It's our turn. Claim the slot and advance the global clock.
+                effective_cadence = self.cadence * 0.75 if is_surge else self.cadence
+                jitter = random.uniform(-1.0, 1.0) if self.min_interval > 1.0 else 0.0
+                slot_interval = max(self.min_interval, effective_cadence + jitter)
 
-        return attempt_num, fd
+                self.next_allowed_request_time = now + slot_interval
+
+                self.total_attempts += 1
+                fd = self.fd_candidates[self.fd_index % len(self.fd_candidates)]
+                self.fd_index += 1
+                attempt_num = self.total_attempts
+                self.worker_heartbeats[worker_name] = datetime.now().strftime("%H:%M:%S")
+                
+                return attempt_num, fd
 
     def write_status_snapshot(self) -> None:
         try:
