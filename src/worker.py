@@ -88,8 +88,7 @@ def run_claimer_worker(
             msg = str(e.message).lower()
 
             if e.status == 500 or "out of host capacity" in msg or "capacity" in e.code.lower():
-                with coordinator.lock:
-                    coordinator.capacity_errors += 1
+                coordinator.record_capacity_check()
                 print(
                     f"   -> [{worker_id}] Out of capacity in {fd_display} (Latency: {latency:.2f}s). Rotating...",
                     flush=True,

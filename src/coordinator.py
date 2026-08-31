@@ -66,11 +66,29 @@ class ClaimCoordinator:
         with self.lock:
             self.rate_limit_hits += 1
             now = time.time()
-            self.next_allowed_request_time = max(self.next_allowed_request_time, now + cooldown_seconds)
+            
+            # AIMD: Increase cadence on rate limit (up to 120s max) to find true token refill rate
+            self.cadence = min(120.0, self.cadence + 2.0)
+            if not hasattr(self, 'consecutive_clean'): self.consecutive_clean = 0
+            self.consecutive_clean = 0
+            
+            self.next_allowed_request_time = max(self.next_allowed_request_time, now + max(cooldown_seconds, self.cadence) + random.uniform(1.0, 3.0))
             print(
-                f"   -> [BROADCAST from {source_worker}] Rate limit hit. Pipeline spaced by {cooldown_seconds:.1f}s",
+                f"   -> [LEARNED RATE LIMIT from {source_worker}] Auto-tuning cadence to {self.cadence:.1f}s. Pipeline spaced by {cooldown_seconds:.1f}s",
                 flush=True,
             )
+
+    def record_capacity_check(self) -> None:
+        with self.lock:
+            self.capacity_errors += 1
+            if not hasattr(self, 'consecutive_clean'): self.consecutive_clean = 0
+            self.consecutive_clean += 1
+            
+            # AIMD Recovery: If we have 6 consecutive clean capacity checks, gently optimize cadence
+            if self.consecutive_clean >= 6 and self.cadence > self.min_interval:
+                self.cadence = max(self.min_interval, self.cadence - 1.0)
+                self.consecutive_clean = 0
+                print(f"   -> [PIPELINE OPTIMIZED] 6 clean checks! Accelerated cadence to {self.cadence:.1f}s", flush=True)
 
     def acquire_next_turn(self, worker_name: str, is_surge: bool = False) -> Tuple[int, Optional[str]]:
         """Atomically allocates a dedicated, collision-free time slot in the launch pipeline."""
