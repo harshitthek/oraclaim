@@ -56,6 +56,9 @@ def parse_args() -> argparse.Namespace:
         "--max-cadence", type=float, default=45.0, help="Maximum cadence ceiling in seconds (default: 45.0)"
     )
     parser.add_argument(
+        "--discord-webhook", type=str, default=None, help="Discord Webhook URL for instant push notifications"
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="Validate credentials and resource discovery without launching"
     )
     return parser.parse_args()
@@ -84,6 +87,8 @@ def main() -> None:
     cfg.num_workers = args.workers
     cfg.base_cadence = args.cadence
     cfg.max_cadence = args.max_cadence
+    if args.discord_webhook:
+        cfg.discord_webhook_url = args.discord_webhook
 
     shape_info = f"{cfg.shape} ({cfg.ocpus:.0f} OCPU / {cfg.memory_in_gbs:.0f} GB RAM)" if cfg.is_flex_shape else cfg.shape
 
@@ -97,6 +102,8 @@ def main() -> None:
     print(f"  - Display Name:     {cfg.display_name}")
     print(f"  - Pipeline Cadence: Every ~{cfg.base_cadence:.0f}s (Max Ceiling: {cfg.max_cadence:.0f}s, Token-Ring Sequencer)")
     print(f"  - Workers:          {cfg.num_workers} Concurrent Synchronized Threads")
+    if cfg.discord_webhook_url:
+        print("  - Discord Alerts:   Enabled (Instant Push Notification on Claim)")
     print(f"  - Config File:      {cfg.config_file}")
     print("=" * 75 + "\n", flush=True)
 
@@ -132,6 +139,7 @@ def main() -> None:
         cadence_seconds=cfg.base_cadence,
         min_interval_seconds=cfg.min_safe_interval,
         max_cadence=cfg.max_cadence,
+        discord_webhook_url=cfg.discord_webhook_url,
     )
 
     def sig_handler(sig, frame):

@@ -309,3 +309,33 @@ def test_coordinator_sleep_timeout_continue(tmp_path):
     att2, _ = coordinator.acquire_next_turn("Worker-1")
     assert att2 == 2
 
+
+def test_coordinator_discord_alert(tmp_path):
+    success_file = str(tmp_path / "success.txt")
+    status_file = str(tmp_path / "status.json")
+
+    coordinator = ClaimCoordinator(
+        ["FAULT-DOMAIN-1"],
+        success_file,
+        status_file,
+        discord_webhook_url="https://discord.com/api/webhooks/test/123",
+    )
+
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        sent = coordinator.send_discord_notification(
+            "Worker-Alpha", "ocid1.instance.123", "Test-Instance", "FAULT-DOMAIN-1", "2026-09-04 12:00:00"
+        )
+        assert sent is True
+        assert mock_urlopen.called
+
+    # Test error handling when urlopen fails
+    with patch("urllib.request.urlopen", side_effect=Exception("Network error")):
+        sent = coordinator.send_discord_notification(
+            "Worker-Alpha", "ocid1.instance.123", "Test-Instance", "FAULT-DOMAIN-1", "2026-09-04 12:00:00"
+        )
+        assert sent is False
+
+    # Test no url configured
+    coordinator.discord_webhook_url = None
+    assert coordinator.send_discord_notification("Worker-Alpha", "id", "name", "fd", "time") is False
+

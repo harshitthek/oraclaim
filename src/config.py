@@ -22,6 +22,7 @@ class ClaimerConfig:
     surge_cadence: float = 18.0
     min_safe_interval: float = 14.0
     max_cadence: float = 45.0
+    discord_webhook_url: Optional[str] = None
 
     @property
     def is_flex_shape(self) -> bool:
@@ -80,4 +81,5 @@ class ClaimerConfig:
             phase_offset=float(os.getenv("PHASE_OFFSET_SECONDS", "14.0")),
             surge_cadence=float(os.getenv("SURGE_CADENCE_SECONDS", "18.0")),
             max_cadence=float(os.getenv("MAX_CADENCE_SECONDS", "45.0")),
+            discord_webhook_url=os.getenv("DISCORD_WEBHOOK_URL"),
         )

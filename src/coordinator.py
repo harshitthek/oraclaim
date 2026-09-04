@@ -23,6 +23,7 @@ class ClaimCoordinator:
         min_interval_seconds: float = 14.0,
         max_cadence: float = 45.0,
         max_cadence_seconds: Optional[float] = None,
+        discord_webhook_url: Optional[str] = None,
     ):
         self.fd_candidates = fault_domain_candidates
         self.success_file = success_file
@@ -31,6 +32,7 @@ class ClaimCoordinator:
         self.cadence = min(cadence_seconds, self.max_cadence)
         self.min_interval = min_interval_seconds
         self.consecutive_clean: int = 0
+        self.discord_webhook_url: Optional[str] = discord_webhook_url
 
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -65,6 +67,45 @@ class ClaimCoordinator:
                 )
         except Exception:
             pass
+
+        self.send_discord_notification(worker_name, instance_id, display_name, fd_display, now_str)
+
+    def send_discord_notification(
+        self, worker_name: str, instance_id: str, display_name: str, fd_display: str, now_str: str
+    ) -> bool:
+        if not self.discord_webhook_url:
+            return False
+        try:
+            import urllib.request
+
+            payload = {
+                "content": "@everyone [SUCCESS] Oracle Cloud Always-Free Instance Claimed!",
+                "embeds": [
+                    {
+                        "title": "Instance Provisioned Successfully",
+                        "color": 65280,
+                        "fields": [
+                            {"name": "Instance Name", "value": f"`{display_name}`", "inline": True},
+                            {"name": "Worker", "value": f"`{worker_name}`", "inline": True},
+                            {"name": "Fault Domain", "value": f"`{fd_display}`", "inline": True},
+                            {"name": "Instance ID", "value": f"```{instance_id}```", "inline": False},
+                            {"name": "Timestamp", "value": now_str, "inline": True},
+                        ],
+                        "footer": {"text": "OraClaim Auto-Provisioning Engine"},
+                    }
+                ],
+            }
+            req = urllib.request.Request(
+                self.discord_webhook_url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json", "User-Agent": "OraClaim/1.0"},
+            )
+            urllib.request.urlopen(req, timeout=10)
+            print("[+] Discord alert sent to webhook successfully!", flush=True)
+            return True
+        except Exception as ex:
+            print(f"   [!] Failed to send Discord alert: {ex}", flush=True)
+            return False
 
     def broadcast_rate_limit(self, source_worker: str, cooldown_seconds: float = 38.0) -> None:
         with self.lock:
