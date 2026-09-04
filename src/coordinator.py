@@ -21,12 +21,16 @@ class ClaimCoordinator:
         status_file: str,
         cadence_seconds: float = 20.0,
         min_interval_seconds: float = 14.0,
+        max_cadence: float = 45.0,
+        max_cadence_seconds: Optional[float] = None,
     ):
         self.fd_candidates = fault_domain_candidates
         self.success_file = success_file
         self.status_file = status_file
-        self.cadence = cadence_seconds
+        self.max_cadence: float = float(max_cadence if max_cadence_seconds is None else max_cadence_seconds)
+        self.cadence = min(cadence_seconds, self.max_cadence)
         self.min_interval = min_interval_seconds
+        self.consecutive_clean: int = 0
 
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -47,7 +51,7 @@ class ClaimCoordinator:
         fd_display = fd_name if fd_name else "WILDCARD (Auto-Placed by Oracle)"
 
         print("\n" + "=" * 75, flush=True)
-        print(f"🎉 [SUCCESS] Instance Claimed by {worker_name}!", flush=True)
+        print(f"[SUCCESS] Instance Claimed by {worker_name}!", flush=True)
         print(f"Name:         {display_name}", flush=True)
         print(f"Instance ID:  {instance_id}", flush=True)
         print(f"Fault Domain: {fd_display}", flush=True)
@@ -66,24 +70,25 @@ class ClaimCoordinator:
         with self.lock:
             self.rate_limit_hits += 1
             now = time.time()
-            
-            # AIMD: Increase cadence on rate limit (up to 120s max) to find true token refill rate
-            self.cadence = min(120.0, self.cadence + 2.0)
-            if not hasattr(self, 'consecutive_clean'): self.consecutive_clean = 0
+
+            # AIMD: Increase cadence on rate limit (capped at max_cadence)
+            self.cadence = min(self.max_cadence, self.cadence + 2.0)
             self.consecutive_clean = 0
-            
-            self.next_allowed_request_time = max(self.next_allowed_request_time, now + max(cooldown_seconds, self.cadence) + random.uniform(1.0, 3.0))
+
+            self.next_allowed_request_time = max(
+                self.next_allowed_request_time,
+                now + max(cooldown_seconds, self.cadence) + random.uniform(1.0, 3.0),
+            )
             print(
-                f"   -> [LEARNED RATE LIMIT from {source_worker}] Auto-tuning cadence to {self.cadence:.1f}s. Pipeline spaced by {cooldown_seconds:.1f}s",
+                f"   -> [LEARNED RATE LIMIT from {source_worker}] Auto-tuning cadence to {self.cadence:.1f}s (ceiling: {self.max_cadence:.1f}s). Pipeline spaced by {cooldown_seconds:.1f}s",
                 flush=True,
             )
 
     def record_capacity_check(self) -> None:
         with self.lock:
             self.capacity_errors += 1
-            if not hasattr(self, 'consecutive_clean'): self.consecutive_clean = 0
             self.consecutive_clean += 1
-            
+
             # AIMD Recovery: If we have 6 consecutive clean capacity checks, gently optimize cadence
             if self.consecutive_clean >= 6 and self.cadence > self.min_interval:
                 self.cadence = max(self.min_interval, self.cadence - 1.0)
@@ -93,16 +98,23 @@ class ClaimCoordinator:
     def acquire_next_turn(self, worker_name: str, is_surge: bool = False) -> Tuple[int, Optional[str]]:
         """Atomically allocates a dedicated, collision-free time slot in the launch pipeline."""
         while True:
+            if self.is_stopped():
+                return 0, None
+
             with self.lock:
                 now = time.time()
                 scheduled_time = max(now, self.next_allowed_request_time)
                 sleep_needed = scheduled_time - now
 
-            if sleep_needed > 0.1:
-                time.sleep(sleep_needed)
+            if sleep_needed > 0.05:
+                if self.stop_event.wait(timeout=sleep_needed) or self.is_stopped():
+                    return 0, None
                 continue  # Wake up and re-check in case another thread extended the rate limit!
 
             with self.lock:
+                if self.is_stopped():
+                    return 0, None
+
                 # Final check to ensure we still have the floor
                 now = time.time()
                 if now < self.next_allowed_request_time:
@@ -120,7 +132,7 @@ class ClaimCoordinator:
                 self.fd_index += 1
                 attempt_num = self.total_attempts
                 self.worker_heartbeats[worker_name] = datetime.now().strftime("%H:%M:%S")
-                
+
                 return attempt_num, fd
 
     def write_status_snapshot(self) -> None:
@@ -129,6 +141,8 @@ class ClaimCoordinator:
                 "total_attempts": self.total_attempts,
                 "capacity_errors": self.capacity_errors,
                 "rate_limits": self.rate_limit_hits,
+                "cadence": round(self.cadence, 2),
+                "max_cadence": self.max_cadence,
                 "workers": self.worker_heartbeats,
                 "start_time": self.start_time,
                 "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

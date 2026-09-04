@@ -21,6 +21,7 @@ class ClaimerConfig:
     phase_offset: float = 14.0
     surge_cadence: float = 18.0
     min_safe_interval: float = 14.0
+    max_cadence: float = 45.0
 
     @property
     def is_flex_shape(self) -> bool:
@@ -78,4 +79,5 @@ class ClaimerConfig:
             base_cadence=float(os.getenv("BASE_CADENCE_SECONDS", "28.0")),
             phase_offset=float(os.getenv("PHASE_OFFSET_SECONDS", "14.0")),
             surge_cadence=float(os.getenv("SURGE_CADENCE_SECONDS", "18.0")),
+            max_cadence=float(os.getenv("MAX_CADENCE_SECONDS", "45.0")),
         )

@@ -34,7 +34,7 @@ def run_claimer_worker(
             break
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        mode_tag = "🔥 SURGE" if surge else "SYNC"
+        mode_tag = "SURGE" if surge else "SYNC"
         fd_display = target_fd if target_fd else "ANY_FD"
 
         launch_kwargs = {
@@ -85,16 +85,64 @@ def run_claimer_worker(
 
         except oci.exceptions.ServiceError as e:
             latency = time.time() - start_req
-            msg = str(e.message).lower()
+            msg = str(e.message or "").lower()
+            code = str(e.code or "").lower()
+            clean_code = code.replace("-", "").replace("_", "").replace(" ", "")
 
-            if e.status == 500 or "out of host capacity" in msg or "capacity" in e.code.lower():
+            is_rate_limit = (
+                e.status == 429
+                or "toomanyrequests" in clean_code
+                or "ratelimit" in clean_code
+                or "rate limit" in msg
+                or "ratelimit" in msg
+                or "too many requests" in msg
+                or "throttl" in msg
+            )
+
+            is_service_limit_or_quota = (
+                not is_rate_limit
+                and (
+                    clean_code in ["limitexceeded", "quotaexceeded"]
+                    or clean_code.startswith("limitexceeded")
+                    or clean_code.startswith("quotaexceeded")
+                    or "limitexceeded" in clean_code
+                    or "quotaexceeded" in clean_code
+                    or "servicelimit" in clean_code
+                    or "service limit" in msg
+                    or "service limits" in msg
+                    or "limits were exceeded" in msg
+                    or "limit was exceeded" in msg
+                    or "limit exceeded" in msg
+                    or "limits exceeded" in msg
+                    or "quota exceeded" in msg
+                    or "quotas exceeded" in msg
+                    or "quota was exceeded" in msg
+                    or "quotas were exceeded" in msg
+                    or (("limit" in msg or "limits" in msg or "quota" in msg) and ("exceeded" in msg or "surpassed" in msg or "exhausted" in msg or "reached" in msg))
+                    or ("standard-a1-core-count" in msg and "exceeded" in msg)
+                    or ("standard-a1-memory-count" in msg and "exceeded" in msg)
+                )
+            )
+
+            if is_service_limit_or_quota:
+                print(
+                    f"\n[!] [{worker_id}] Service Limit Exceeded: {e.message}\n"
+                    f"   Account quota or Always-Free service limits are already fully consumed.\n"
+                    f"   Halting execution cleanly as retrying will not succeed without manual intervention.",
+                    flush=True,
+                )
+                coordinator.stop_event.set()
+                coordinator.write_status_snapshot()
+                break
+
+            elif e.status == 500 or "out of host capacity" in msg or "capacity" in clean_code:
                 coordinator.record_capacity_check()
                 print(
                     f"   -> [{worker_id}] Out of capacity in {fd_display} (Latency: {latency:.2f}s). Rotating...",
                     flush=True,
                 )
 
-            elif e.status == 429 or "toomanyrequests" in e.code.lower():
+            elif is_rate_limit:
                 retry_header = 38.0
                 if hasattr(e, "headers") and e.headers and "retry-after" in e.headers:
                     try:

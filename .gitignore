@@ -69,3 +69,5 @@ claimer_status.json
 claimer_state.json
 *.log
 *.sqlite3
+.agents/
+ORIGINAL_REQUEST.md

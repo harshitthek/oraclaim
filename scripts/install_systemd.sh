@@ -7,7 +7,7 @@ set -euo pipefail
 
 SERVICE_NAME="claim_arm.service"
 INSTALL_DIR="$(pwd)"
-CURRENT_USER="$(whoami)"
+CURRENT_USER="${SUDO_USER:-$(whoami)}"
 
 echo "=== Installing ${SERVICE_NAME} ==="
 echo "Install Directory: ${INSTALL_DIR}"
@@ -29,6 +29,7 @@ fi
 
 # 3. Create log file with correct permissions
 touch "${INSTALL_DIR}/claim_arm.log"
+chown "${CURRENT_USER}:${CURRENT_USER}" "${INSTALL_DIR}/claim_arm.log"
 chmod 664 "${INSTALL_DIR}/claim_arm.log"
 
 # 4. Write systemd unit file

@@ -66,8 +66,11 @@ class OCIClientWrapper:
         except Exception:
             pass
 
-        # Ultimate fallback (Default Mumbai Ubuntu 24.04 ARM)
-        return "ocid1.image.oc1.ap-mumbai-1.aaaaaaaavpkbfemaxi7gfzobc4qsc3p2m5szuswd7skrxvzo5teii6bfkd2a"
+        # If no image found in dynamic catalog, fail cleanly
+        raise RuntimeError(
+            f"Failed to discover a compatible image: No suitable image found in dynamic catalog for shape '{shape}', "
+            f"os '{os_name}', version '{os_version}'. Check tenancy subscription and region availability."
+        )
 
     def discover_public_subnet(self) -> str:
         vcns = self.network_client.list_vcns(self.tenancy_id).data

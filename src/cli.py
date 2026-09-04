@@ -53,12 +53,22 @@ def parse_args() -> argparse.Namespace:
         "--cadence", type=float, default=20.0, help="Base polling cadence in seconds across the pipeline (default: 20.0)"
     )
     parser.add_argument(
+        "--max-cadence", type=float, default=45.0, help="Maximum cadence ceiling in seconds (default: 45.0)"
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="Validate credentials and resource discovery without launching"
     )
     return parser.parse_args()
 
 
 def main() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(errors="replace")
+            except Exception:
+                pass
+
     args = parse_args()
 
     cfg = ClaimerConfig.load_from_env_or_file(
@@ -73,20 +83,21 @@ def main() -> None:
     cfg.display_name = args.name
     cfg.num_workers = args.workers
     cfg.base_cadence = args.cadence
+    cfg.max_cadence = args.max_cadence
 
     shape_info = f"{cfg.shape} ({cfg.ocpus:.0f} OCPU / {cfg.memory_in_gbs:.0f} GB RAM)" if cfg.is_flex_shape else cfg.shape
 
     print("\n" + "=" * 75)
-    print("  ⚡ ORACLAIM AUTO-PROVISIONING ENGINE")
+    print("  [+] ORACLAIM AUTO-PROVISIONING ENGINE")
     print("=" * 75)
-    print(f"  • Target Shape:     {shape_info}")
-    print(f"  • Target OS:        {cfg.os_name} {cfg.os_version or '(Latest)'}")
+    print(f"  - Target Shape:     {shape_info}")
+    print(f"  - Target OS:        {cfg.os_name} {cfg.os_version or '(Latest)'}")
     if cfg.boot_volume_size_in_gbs:
-        print(f"  • Boot Volume:      {cfg.boot_volume_size_in_gbs} GB")
-    print(f"  • Display Name:     {cfg.display_name}")
-    print(f"  • Pipeline Cadence: Every ~{cfg.base_cadence:.0f}s (Token-Ring Sequencer)")
-    print(f"  • Workers:          {cfg.num_workers} Concurrent Synchronized Threads")
-    print(f"  • Config File:      {cfg.config_file}")
+        print(f"  - Boot Volume:      {cfg.boot_volume_size_in_gbs} GB")
+    print(f"  - Display Name:     {cfg.display_name}")
+    print(f"  - Pipeline Cadence: Every ~{cfg.base_cadence:.0f}s (Max Ceiling: {cfg.max_cadence:.0f}s, Token-Ring Sequencer)")
+    print(f"  - Workers:          {cfg.num_workers} Concurrent Synchronized Threads")
+    print(f"  - Config File:      {cfg.config_file}")
     print("=" * 75 + "\n", flush=True)
 
     if not cfg.public_ssh_key:
@@ -108,13 +119,20 @@ def main() -> None:
     print(f"[+] Placement Targets:    Wildcard (ANY_FD), {', '.join(raw_fds)}")
 
     if args.dry_run:
-        print("\n[✔] Dry run successful. All credentials, image catalogs, and discovery endpoints valid!")
+        print("\n[+] Dry run pre-flight checks passed! All credentials, image catalogs, and discovery endpoints valid!")
         return
 
     success_file = os.path.join(os.getcwd(), "instance_success.txt")
     status_file = os.path.join(os.getcwd(), "claimer_status.json")
 
-    coordinator = ClaimCoordinator(fd_candidates, success_file, status_file, cadence_seconds=cfg.base_cadence)
+    coordinator = ClaimCoordinator(
+        fd_candidates,
+        success_file,
+        status_file,
+        cadence_seconds=cfg.base_cadence,
+        min_interval_seconds=cfg.min_safe_interval,
+        max_cadence=cfg.max_cadence,
+    )
 
     def sig_handler(sig, frame):
         print("\n[*] Stopping claimer workers gracefully...", flush=True)
@@ -136,7 +154,7 @@ def main() -> None:
         t.start()
 
     while not coordinator.is_stopped():
-        time.sleep(1.0)
+        coordinator.stop_event.wait(timeout=1.0)
 
     print("[*] Claimer process finished.")
 
